@@ -832,7 +832,7 @@ func (s componentSyncStep) Run() error {
 			var res engram.InjectionResult
 			var err error
 			if adapter.Agent() == model.AgentOpenClaw {
-				res, err = engram.InjectWithPromptDir(s.homeDir, s.workspaceDir, adapter)
+				res, err = engram.InjectWithPromptDirWithOptions(s.homeDir, s.workspaceDir, adapter, engramOpts)
 			} else {
 				targetDir := componentInjectionDir(s.homeDir, s.workspaceDir, adapter)
 				res, err = engram.InjectWithOptions(targetDir, adapter, engramOpts)

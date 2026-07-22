@@ -1045,14 +1045,14 @@ func (s componentApplyStep) Run() error {
 				}
 			}
 			engramOpts := engram.InjectOptions{
+				Version:                     engramVersion,
 				CodexOrchestratorAssignment: s.selection.CodexOrchestratorAssignment,
 				CodexCarrilModelAssignments: s.selection.CodexCarrilModelAssignments,
 				CodexModelAssignments:       s.selection.CodexModelAssignments,
-				Version:                     engramVersion,
 			}
 			var err error
 			if adapter.Agent() == model.AgentOpenClaw {
-				_, err = engram.InjectWithPromptDir(s.homeDir, s.workspaceDir, adapter)
+				_, err = engram.InjectWithPromptDirWithOptions(s.homeDir, s.workspaceDir, adapter, engramOpts)
 			} else {
 				targetDir := componentInjectionDirScoped(s.homeDir, s.workspaceDir, s.scope, adapter)
 				_, err = engram.InjectWithOptions(targetDir, adapter, engramOpts)

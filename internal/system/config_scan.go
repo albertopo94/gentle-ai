@@ -3,6 +3,7 @@ package system
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // ConfigState records the filesystem presence of an agent's global config directory.
@@ -45,6 +46,26 @@ func knownAgentConfigDirs(homeDir string) []ConfigState {
 		{Agent: "pi", Path: filepath.Join(homeDir, ".pi")},
 		{Agent: "trae-ide", Path: filepath.Join(homeDir, ".trae")},
 		{Agent: "hermes", Path: filepath.Join(homeDir, ".hermes")},
+		{Agent: "claude-desktop", Path: claudeDesktopGlobalConfigDir(homeDir)},
+	}
+}
+
+func claudeDesktopGlobalConfigDir(homeDir string) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(homeDir, "Library", "Application Support", "Claude")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(homeDir, "AppData", "Roaming")
+		}
+		return filepath.Join(appData, "Claude")
+	default: // linux and others
+		xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
+		if xdgConfigHome == "" {
+			xdgConfigHome = filepath.Join(homeDir, ".config")
+		}
+		return filepath.Join(xdgConfigHome, "Claude")
 	}
 }
 

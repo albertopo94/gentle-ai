@@ -15,6 +15,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/cli"
 	"github.com/gentleman-programming/gentle-ai/internal/components/opencodeplugin"
 	componentuninstall "github.com/gentleman-programming/gentle-ai/internal/components/uninstall"
+	"github.com/gentleman-programming/gentle-ai/internal/mcp"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/internal/planner"
@@ -56,10 +57,12 @@ var (
 	}
 )
 
+// Run executes the gentle-ai CLI application using os.Args and os.Stdout.
 func Run() error {
 	return RunArgs(os.Args[1:], os.Stdout)
 }
 
+// RunArgs parses arguments and executes the requested gentle-ai command, outputting to stdout.
 func RunArgs(args []string, stdout io.Writer) error {
 	// Propagate the build-time version to the CLI and upgrade layers so backup
 	// manifests record which version of gentle-ai created them.
@@ -78,6 +81,13 @@ func RunArgs(args []string, stdout io.Writer) error {
 		case "help", "--help", "-h":
 			printHelp(stdout, Version)
 			return nil
+		case "mcp":
+			if hasHelpFlag(args[1:]) {
+				printMCPHelp(stdout, Version)
+				return nil
+			}
+			server := mcp.NewServer(Version)
+			return server.Serve(os.Stdin, stdout)
 		case "uninstall":
 			if len(args) >= 2 && args[1] == "opencode-plugin" {
 				_, err := cli.RunUninstallOpenCodePlugin(args[2:], stdout)

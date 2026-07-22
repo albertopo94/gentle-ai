@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
@@ -11,11 +15,13 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/versions"
 )
 
+// InjectionResult records the outcome of an MCP configuration injection operation.
 type InjectionResult struct {
 	Changed bool
 	Files   []string
 }
 
+// Inject configures MCP server settings for the given adapter according to its Strategy.
 func Inject(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	if !adapter.SupportsMCP() {
 		return InjectionResult{}, nil
@@ -50,6 +56,9 @@ func context7Args() []string {
 // endpoint. The file is created if it does not yet exist.
 func injectTOMLFile(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	configPath := adapter.MCPConfigPath(homeDir, "context7")
+	if configPath == "" {
+		return InjectionResult{}, nil
+	}
 
 	existingBytes, err := osReadFile(configPath)
 	if err != nil {
@@ -73,6 +82,9 @@ func injectTOMLFile(homeDir string, adapter agents.Adapter) (InjectionResult, er
 // comment-preserving — user content outside the managed block is untouched.
 func injectYAMLFile(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	configPath := adapter.MCPConfigPath(homeDir, "context7")
+	if configPath == "" {
+		return InjectionResult{}, nil
+	}
 
 	raw, err := os.ReadFile(configPath)
 	var existingBytes []byte
@@ -99,6 +111,9 @@ func injectYAMLFile(homeDir string, adapter agents.Adapter) (InjectionResult, er
 // injectSeparateFile writes a standalone JSON file per MCP server.
 func injectSeparateFile(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	path := adapter.MCPConfigPath(homeDir, "context7")
+	if path == "" {
+		return InjectionResult{}, nil
+	}
 	writeResult, err := filemerge.WriteFileAtomic(path, DefaultContext7ServerJSON(), 0o644)
 	if err != nil {
 		return InjectionResult{}, err
@@ -107,7 +122,7 @@ func injectSeparateFile(homeDir string, adapter agents.Adapter) (InjectionResult
 	return InjectionResult{Changed: writeResult.Changed, Files: []string{path}}, nil
 }
 
-// injectMergeIntoSettings merges MCP servers into a config file (OpenCode opencode.json, Gemini settings.json).
+// injectMergeIntoSettings merges MCP servers into a config file (OpenCode opencode.json, Gemini settings.json, Claude Desktop claude_desktop_config.json).
 func injectMergeIntoSettings(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
 	settingsPath := adapter.SettingsPath(homeDir)
 	if settingsPath == "" {
@@ -121,6 +136,9 @@ func injectMergeIntoSettings(homeDir string, adapter agents.Adapter) (InjectionR
 	if adapter.Agent() == model.AgentOpenClaw {
 		return injectOpenClawMergeIntoSettings(settingsPath)
 	}
+	if adapter.Agent() == model.AgentClaudeDesktop {
+		return injectClaudeDesktopMergeIntoSettings(settingsPath)
+	}
 
 	settingsWrite, err := mergeJSONFile(settingsPath, overlay)
 	if err != nil {
@@ -128,6 +146,142 @@ func injectMergeIntoSettings(homeDir string, adapter agents.Adapter) (InjectionR
 	}
 
 	return InjectionResult{Changed: settingsWrite.Changed, Files: []string{settingsPath}}, nil
+}
+
+var gentleAILookPath = exec.LookPath
+
+func isGentleAICommand(cmd string) bool {
+	if cmd == "" {
+		return false
+	}
+	base := filepath.Base(cmd)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(base, "gentle-ai.exe") || strings.EqualFold(base, "gentle-ai")
+	}
+	return base == "gentle-ai"
+}
+
+func isStableHomebrewGentleAIPath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return (clean == "/opt/homebrew/bin/gentle-ai" || clean == "/usr/local/bin/gentle-ai") && isGentleAICommand(clean)
+}
+
+func preferredStableGentleAICommand() string {
+	p, err := gentleAILookPath("gentle-ai")
+	if err == nil && isStableHomebrewGentleAIPath(p) {
+		return p
+	}
+	return "gentle-ai"
+}
+
+func resolveGentleAICommand() string {
+	return preferredStableGentleAICommand()
+}
+
+func isVersionedHomebrewCellarPath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return strings.Contains(clean, "/Cellar/")
+}
+
+func stableGentleAICommandForExisting(existing string) string {
+	if existing != "" && !isVersionedHomebrewCellarPath(existing) {
+		return existing
+	}
+	return preferredStableGentleAICommand()
+}
+
+func injectClaudeDesktopMergeIntoSettings(settingsPath string) (InjectionResult, error) {
+	cmd := resolveGentleAICommand()
+	baseJSON, err := osReadFile(settingsPath)
+	if err != nil {
+		return InjectionResult{}, err
+	}
+	fileExisted := baseJSON != nil
+	var backupBytes []byte
+	backupPath := settingsPath + ".bak"
+
+	if fileExisted {
+		backupBytes = baseJSON
+		if existingCmd, ok := existingMergedGentleAICommand(baseJSON); ok {
+			cmd = stableGentleAICommandForExisting(existingCmd)
+		}
+		if err := os.WriteFile(backupPath, backupBytes, 0o600); err != nil {
+			return InjectionResult{}, fmt.Errorf("write backup settings %q: %w", backupPath, err)
+		}
+		_ = os.Chmod(backupPath, 0o600)
+	}
+
+	overlay := ClaudeDesktopOverlayJSON(cmd)
+	settingsWrite, err := mergeJSONFileMode(settingsPath, overlay, 0o600)
+	if err != nil {
+		if fileExisted {
+			if _, restoreErr := filemerge.WriteFileAtomic(settingsPath, backupBytes, 0o600); restoreErr != nil {
+				_ = os.Remove(backupPath)
+				return InjectionResult{}, fmt.Errorf("merge json error: %w; restore backup failed: %v", err, restoreErr)
+			}
+			_ = os.Chmod(settingsPath, 0o600)
+			_ = os.Remove(backupPath)
+		} else {
+			if rmErr := os.Remove(settingsPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				return InjectionResult{}, fmt.Errorf("merge json error: %w; remove settings failed: %v", err, rmErr)
+			}
+		}
+		return InjectionResult{}, err
+	}
+
+	if fileExisted {
+		_ = os.Remove(backupPath)
+	}
+
+	if err := os.Chmod(settingsPath, 0o600); err != nil && !os.IsNotExist(err) {
+		return InjectionResult{}, fmt.Errorf("chmod settings %q: %w", settingsPath, err)
+	}
+
+	return InjectionResult{Changed: settingsWrite.Changed, Files: []string{settingsPath}}, nil
+}
+
+func existingMergedGentleAICommand(baseJSON []byte) (string, bool) {
+	if len(baseJSON) == 0 {
+		return "", false
+	}
+	normalized, err := filemerge.MergeJSONObjects(baseJSON, []byte("{}"))
+	if err != nil {
+		return "", false
+	}
+	var root map[string]any
+	if err := json.Unmarshal(normalized, &root); err != nil {
+		return "", false
+	}
+	mcpServers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	server, ok := mcpServers["gentle-ai"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	return executableFromCommandValue(server["command"])
+}
+
+func executableFromCommandValue(command any) (string, bool) {
+	switch value := command.(type) {
+	case string:
+		if value == "" {
+			return "", false
+		}
+		return value, true
+	case []any:
+		if len(value) == 0 {
+			return "", false
+		}
+		first, ok := value[0].(string)
+		if !ok || first == "" {
+			return "", false
+		}
+		return first, true
+	default:
+		return "", false
+	}
 }
 
 func injectOpenCodeMergeIntoSettings(settingsPath string) (InjectionResult, error) {
@@ -274,6 +428,10 @@ func injectMCPConfigFile(homeDir string, adapter agents.Adapter) (InjectionResul
 }
 
 func mergeJSONFile(path string, overlay []byte) (filemerge.WriteResult, error) {
+	return mergeJSONFileMode(path, overlay, 0o644)
+}
+
+func mergeJSONFileMode(path string, overlay []byte, mode os.FileMode) (filemerge.WriteResult, error) {
 	baseJSON, err := osReadFile(path)
 	if err != nil {
 		return filemerge.WriteResult{}, err
@@ -284,7 +442,7 @@ func mergeJSONFile(path string, overlay []byte) (filemerge.WriteResult, error) {
 		return filemerge.WriteResult{}, err
 	}
 
-	return filemerge.WriteFileAtomic(path, merged, 0o644)
+	return filemerge.WriteFileAtomic(path, merged, mode)
 }
 
 var osReadFile = func(path string) ([]byte, error) {
